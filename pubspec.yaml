@@ -1,0 +1,41 @@
+name: flutter_application_1
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # firebase
+  firebase_core: ^4.4.0
+  firebase_auth: ^6.1.4
+
+  # API Call
+  http: ^1.6.0
+
+  # เก็บ Login Session
+  shared_preferences: ^2.2.2
+
+  # จัดการ State
+  provider: ^6.1.2
+
+  # MQTT สำหรับ NETPIE  ← เพิ่มใหม่
+  mqtt_client: ^10.0.0
+
+  # Font สวยงาม  ← เพิ่มใหม่
+  google_fonts: ^6.1.0
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
