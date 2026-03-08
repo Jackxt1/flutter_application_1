@@ -1,22 +1,21 @@
 // lib/services/mqtt_service.dart
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:mqtt_client/mqtt_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
-import 'package:mqtt_client/mqtt_browser_client.dart';
+import 'package:http/http.dart' as http;
 
 // ============================================================
-// ⚙️  NETPIE CONFIG — แก้ตรงนี้
+// ⚙️  NETPIE CONFIG
 // ============================================================
-const String kMqttHost   = 'broker.netpie.io';
-const int    kMqttPort   = 1883;
-const int    kMqttWsPort = 8083;
-const String kClientID   = 'cd843c79-b2ff-48f6-bc6c-8bc691fa7ff6-app';
-const String kMqttUser   = 'xqweDbQFYALULNZXWypjTPdqm5bGPqEf';
-const String kMqttPass   = 'oiiFyoGgSQPAAcGCR1QNL85AgJp4XNXN';
+const String kDeviceID  = 'cd843c79-b2ff-48f6-bc6c-8bc691fa7ff6';
+const String kToken     = 'xqweDbQFYALULNZXWypjTPdqm5bGPqEf';
+const String kSecret    = 'oiiFyoGgSQPAAcGCR1QNL85AgJp4XNXN';
+
+const String kAuthHeader = 'Device $kDeviceID:$kToken:$kSecret';
+const String kBaseUrl    = 'https://api.netpie.io/v2/device';
 
 class MqttService extends ChangeNotifier {
-  MqttClient? _client;
+  Timer? _timer;
 
   bool isConnected  = false;
   bool isConnecting = false;
@@ -39,63 +38,33 @@ class MqttService extends ChangeNotifier {
   Future<void> connect() async {
     if (isConnecting) return;
     isConnecting = true;
-    isConnected  = false;
     notifyListeners();
 
-    if (kIsWeb) {
-      _client = MqttBrowserClient('ws://$kMqttHost:$kMqttWsPort/mqtt', kClientID)
-        ..port            = kMqttWsPort
-        ..keepAlivePeriod = 30
-        ..onConnected     = _onConnected
-        ..onDisconnected  = _onDisconnected
-        ..logging(on: false);
-    } else {
-      _client = MqttServerClient(kMqttHost, kClientID)
-        ..port            = kMqttPort
-        ..keepAlivePeriod = 30
-        ..onConnected     = _onConnected
-        ..onDisconnected  = _onDisconnected
-        ..logging(on: false);
-    }
+    await _fetchShadow();
 
-    _client!.connectionMessage = MqttConnectMessage()
-        .withClientIdentifier(kClientID)
-        .authenticateAs(kMqttUser, kMqttPass)
-        .startClean();
-
-    try {
-      await _client!.connect();
-    } catch (e) {
-      debugPrint('MQTT error: $e');
-      isConnecting = false;
-      notifyListeners();
-      return;
-    }
-
-    if (_client!.connectionStatus!.state == MqttConnectionState.connected) {
-      _client!.subscribe('@shadow/data', MqttQos.atLeastOnce);
-      _client!.updates!.listen(_onMessage);
-      publish('@shadow/data/get', '{}');
-    }
+    // polling ทุก 2 วินาที
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _fetchShadow());
 
     isConnecting = false;
     notifyListeners();
   }
 
   void disconnect() {
-    _client?.disconnect();
+    _timer?.cancel();
     isConnected = false;
     notifyListeners();
   }
 
-  void _onConnected()    { isConnected = true;  notifyListeners(); }
-  void _onDisconnected() { isConnected = false; isConnecting = false; notifyListeners(); }
-
-  void _onMessage(List<MqttReceivedMessage<MqttMessage>> msgs) {
-    for (final m in msgs) {
-      final raw = (m.payload as MqttPublishMessage).payload.message;
-      try {
-        final Map<String, dynamic> full = jsonDecode(utf8.decode(raw));
+  Future<void> _fetchShadow() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kBaseUrl/shadow/data'),
+        headers: {'Authorization': kAuthHeader},
+      );
+      debugPrint('Status: ${res.statusCode}');
+      debugPrint('Body: ${res.body}');
+      if (res.statusCode == 200) {
+        final Map<String, dynamic> full = jsonDecode(res.body);
         final Map<String, dynamic> d    = full['data'] ?? full;
         smoke     = (d['smoke']     ?? smoke).toInt();
         vibration = (d['vibration'] ?? vibration).toInt();
@@ -108,10 +77,36 @@ class MqttService extends ChangeNotifier {
         enableSmoke     = _b(d['enableSmoke'],     enableSmoke);
         enableVibration = _b(d['enableVibration'], enableVibration);
         enableDoor      = _b(d['enableDoor'],      enableDoor);
+        isConnected = true;
         notifyListeners();
-      } catch (_) {}
+      } else {
+        isConnected = false;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Fetch error: $e');
+      isConnected = false;
+      notifyListeners();
     }
   }
+
+  Future<void> publish(String topic, String msg) async {
+  try {
+    final res = await http.put(
+      Uri.parse('$kBaseUrl/message?topic=${Uri.encodeComponent(topic)}'),
+      headers: {
+        'Authorization': kAuthHeader,
+        'Content-Type': 'application/json',
+      },
+      body: msg,
+    );
+
+    debugPrint('Publish status: ${res.statusCode}');
+    debugPrint('Publish body: ${res.body}');
+  } catch (e) {
+    debugPrint('Publish error: $e');
+  }
+}
 
   bool _b(dynamic val, bool fallback) {
     if (val == null) return fallback;
@@ -119,14 +114,7 @@ class MqttService extends ChangeNotifier {
     return val == 1;
   }
 
-  void publish(String topic, String msg) {
-    if (_client == null) return;
-    if (!isConnected && topic != '@shadow/data/get') return;
-    final b = MqttClientPayloadBuilder()..addString(msg);
-    _client!.publishMessage(topic, MqttQos.atLeastOnce, b.payload!);
-  }
-
-  void setLed(String which, bool val)     => publish('@msg/led/$which',     val ? 'on' : 'off');
-  void setMode(bool night)                => publish('@msg/mode',            night ? 'night' : 'day');
+  void setLed(String which, bool val)     => publish('@msg/led/$which',    val ? 'on' : 'off');
+  void setMode(bool night)                => publish('@msg/mode',           night ? 'night' : 'day');
   void setSensor(String sensor, bool val) => publish('@msg/enable/$sensor', val ? 'on' : 'off');
 }
